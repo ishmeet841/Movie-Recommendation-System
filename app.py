@@ -2,24 +2,42 @@ import streamlit as st
 import pickle
 import pandas as pd
 import requests
+from pathlib import Path
 
 # ========================
 # CONFIGURATION
 # ========================
-API_KEY = "a6380491cc65873c1435ca0b246b02e9"
 POSTER_BASE_URL = "https://image.tmdb.org/t/p/w500"
 PLACEHOLDER_IMAGE = "https://via.placeholder.com/500x750?text=No+Image"
 MOVIES_PER_PAGE = 10
 MOVIES_PER_ROW = 5
+BASE_DIR = Path(__file__).resolve().parent
+MOVIES_PATH = BASE_DIR / "movies.pkl"
+SIMILARITY_PATH = BASE_DIR / "similarity.pkl"
+
+
+def get_api_key():
+    try:
+        return st.secrets.get("TMDB_API_KEY")
+    except Exception:
+        return None
+
+
+API_KEY = get_api_key()
+
+st.set_page_config(page_title="🎬 Movie Recommender", layout="wide")
 
 # ========================
 # API FUNCTIONS
 # ========================
 def fetch_poster(movie_id):
     """Fetch poster image URL from TMDB API."""
+    if not API_KEY:
+        return PLACEHOLDER_IMAGE
+
     url = f"https://api.themoviedb.org/3/movie/{movie_id}?api_key={API_KEY}&language=en-US"
     try:
-        data = requests.get(url).json()
+        data = requests.get(url, timeout=10).json()
         poster_path = data.get("poster_path")
         return f"{POSTER_BASE_URL}{poster_path}" if poster_path else PLACEHOLDER_IMAGE
     except Exception:
@@ -53,19 +71,67 @@ def recommend(movie):
             posters.append(fetch_poster(movie_id))
     return names, posters
 
+
+def load_movies(path):
+    with path.open("rb") as movie_file:
+        movies_obj = pickle.load(movie_file)
+    return movies_obj if isinstance(movies_obj, pd.DataFrame) else pd.DataFrame(movies_obj)
+
+
+def load_similarity(path):
+    with path.open("rb") as similarity_file:
+        return pickle.load(similarity_file)
+
+
+def build_similarity(movies_df):
+    if "tags" not in movies_df.columns:
+        raise ValueError(
+            "Missing 'tags' column in movies.pkl, so similarity.pkl cannot be generated automatically."
+        )
+
+    from sklearn.feature_extraction.text import CountVectorizer
+    from sklearn.metrics.pairwise import cosine_similarity
+
+    vectors = CountVectorizer(max_features=5000, stop_words="english").fit_transform(
+        movies_df["tags"].fillna("")
+    )
+    similarity_matrix = cosine_similarity(vectors)
+
+    try:
+        with SIMILARITY_PATH.open("wb") as similarity_file:
+            pickle.dump(similarity_matrix, similarity_file)
+    except OSError:
+        pass
+
+    return similarity_matrix
+
+
 # ========================
 # LOAD DATA
 # ========================
-movies_dict = pickle.load(open('movies.pkl', 'rb'))
-movies = pd.DataFrame(movies_dict)
-similarity = pickle.load(open('similarity.pkl', 'rb'))
+if not MOVIES_PATH.exists():
+    st.error(f"Missing required data file: {MOVIES_PATH.name}")
+    st.stop()
 
-# ========================
-# PAGE CONFIG
-# ========================
-st.set_page_config(page_title="🎬 Movie Recommender", layout="wide")
+try:
+    movies = load_movies(MOVIES_PATH)
+except Exception as exc:
+    st.error(f"Unable to load {MOVIES_PATH.name}: {exc}")
+    st.stop()
 
-# ========================
+try:
+    similarity = load_similarity(SIMILARITY_PATH) if SIMILARITY_PATH.exists() else build_similarity(movies)
+except Exception as exc:
+    st.error(
+        "Unable to load or build similarity matrix. "
+        "Ensure movies.pkl includes a 'tags' column or provide similarity.pkl."
+    )
+    st.caption(f"Details: {exc}")
+    st.stop()
+
+if not API_KEY:
+    st.warning("TMDB_API_KEY is not configured in Streamlit secrets. Posters will use placeholders.")
+
 # CUSTOM STYLING
 # ========================
 st.markdown("""
