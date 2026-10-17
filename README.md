@@ -16,15 +16,25 @@ Use these settings in Streamlit Cloud:
 - **Main file path**: `app.py`
 - **Requirements file**: `requirements.txt`
 
-### Required secret
+### Required TMDB secret (Streamlit Cloud)
 
-Add this in **App settings → Secrets**:
+In Streamlit Cloud open **Manage app → Settings → Secrets**, then add:
 
 ```toml
 TMDB_API_KEY = "your_tmdb_api_key"
 ```
 
-If `TMDB_API_KEY` is missing, the app still runs but movie posters use a placeholder image.
+Save the secret, then **redeploy/restart** the app so the new value is loaded.
+
+Do **not** reuse the previously exposed TMDB key; generate and use a new key.
+
+For local or alternate deployments, you can also set:
+
+```bash
+export TMDB_API_KEY="your_tmdb_api_key"
+```
+
+If `TMDB_API_KEY` is missing or invalid, the app still runs but movie posters use placeholder images.
 
 ### Model/data files
 
