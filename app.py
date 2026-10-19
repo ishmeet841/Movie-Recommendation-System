@@ -1,9 +1,10 @@
 import streamlit as st
 import pickle
 import pandas as pd
-import requests
-import os
 from pathlib import Path
+
+from tmdb_client import fetch_poster as fetch_tmdb_poster
+from tmdb_client import resolve_tmdb_auth
 
 # ========================
 # CONFIGURATION
@@ -18,17 +19,13 @@ MOVIES_PATH = BASE_DIR / "movies.pkl"
 SIMILARITY_PATH = BASE_DIR / "similarity.pkl"
 
 
-def get_api_key():
-    api_key = None
+def get_tmdb_auth_config():
+    secrets = None
     try:
-        api_key = st.secrets.get("TMDB_API_KEY")
+        secrets = st.secrets
     except Exception:
         pass
-
-    if not api_key:
-        api_key = os.getenv("TMDB_API_KEY")
-
-    return api_key.strip() if isinstance(api_key, str) and api_key.strip() else None
+    return resolve_tmdb_auth(secrets=secrets)
 
 
 def show_status_once(message_key, level, message):
@@ -39,7 +36,7 @@ def show_status_once(message_key, level, message):
     getattr(st, level)(message)
 
 
-API_KEY = get_api_key()
+TMDB_AUTH_CONFIG, TMDB_AUTH_ERROR = get_tmdb_auth_config()
 
 st.set_page_config(page_title="🎬 Movie Recommender", layout="wide")
 
@@ -48,49 +45,40 @@ st.set_page_config(page_title="🎬 Movie Recommender", layout="wide")
 # ========================
 def fetch_poster(movie_id):
     """Fetch poster image URL from TMDB API."""
-    if not API_KEY:
-        return PLACEHOLDER_IMAGE
+    poster_url, error_code = fetch_tmdb_poster(
+        movie_id=movie_id,
+        auth_config=TMDB_AUTH_CONFIG,
+        poster_base_url=POSTER_BASE_URL,
+        placeholder_image=PLACEHOLDER_IMAGE,
+        timeout_seconds=TMDB_TIMEOUT_SECONDS,
+    )
 
-    url = f"https://api.themoviedb.org/3/movie/{movie_id}"
-    try:
-        response = requests.get(
-            url,
-            params={"api_key": API_KEY, "language": "en-US"},
-            timeout=TMDB_TIMEOUT_SECONDS,
-        )
-        response.raise_for_status()
-        data = response.json()
-        poster_path = data.get("poster_path")
-        return f"{POSTER_BASE_URL}{poster_path}" if poster_path else PLACEHOLDER_IMAGE
-    except requests.Timeout:
+    if error_code == "timeout":
         show_status_once(
             "tmdb_timeout_warning_shown",
             "warning",
             "TMDB poster request timed out. Showing placeholders where poster data is unavailable.",
         )
-        return PLACEHOLDER_IMAGE
-    except requests.HTTPError as exc:
-        status_code = exc.response.status_code if exc.response is not None else "unknown"
-        if status_code in (401, 403):
-            show_status_once(
-                "tmdb_auth_warning_shown",
-                "warning",
-                "TMDB poster request was rejected (401/403). Verify TMDB_API_KEY in Streamlit secrets.",
-            )
-        else:
-            show_status_once(
-                "tmdb_http_warning_shown",
-                "warning",
-                f"TMDB poster request failed (HTTP {status_code}). Showing placeholders where needed.",
-            )
-        return PLACEHOLDER_IMAGE
-    except (requests.RequestException, ValueError):
+    elif error_code == "auth_error":
+        show_status_once(
+            "tmdb_auth_warning_shown",
+            "warning",
+            "TMDB poster requests were rejected (401/403). Verify your TMDB credentials in Streamlit secrets.",
+        )
+    elif error_code == "rate_limited":
+        show_status_once(
+            "tmdb_rate_limit_warning_shown",
+            "warning",
+            "TMDB rate limit reached (HTTP 429). Posters may temporarily fall back to placeholders.",
+        )
+    elif error_code in {"http_error", "invalid_response", "request_error"}:
         show_status_once(
             "tmdb_fetch_warning_shown",
             "warning",
             "TMDB poster lookup is temporarily unavailable. Showing placeholders where poster data is unavailable.",
         )
-        return PLACEHOLDER_IMAGE
+
+    return poster_url
 
 # ========================
 # RECOMMENDATION LOGIC
@@ -178,13 +166,20 @@ except Exception as exc:
     st.caption(f"Details: {exc}")
     st.stop()
 
-if not API_KEY:
-    st.warning("TMDB_API_KEY is not configured. Posters will use placeholders.")
+if not TMDB_AUTH_CONFIG:
+    if TMDB_AUTH_ERROR == "invalid":
+        st.warning(
+            "TMDB credentials are configured but malformed. Posters will use placeholders until corrected."
+        )
+    else:
+        st.warning("TMDB credentials are not configured. Posters will use placeholders.")
     st.info(
-        "Add this in Streamlit Cloud **App settings → Secrets**:\n\n"
+        "Add one of these in Streamlit Cloud **App settings → Secrets**:\n\n"
         "```toml\nTMDB_API_KEY = \"your_tmdb_api_key\"\n```\n\n"
+        "or\n\n"
+        "```toml\nTMDB_BEARER_TOKEN = \"your_tmdb_v4_read_access_token\"\n```\n\n"
         "After saving, redeploy/restart the app. For local/alternate deployments, you can also set the "
-        "`TMDB_API_KEY` environment variable."
+        "`TMDB_API_KEY`, `TMDB_BEARER_TOKEN`, or `TMDB_V4_ACCESS_TOKEN` environment variable."
     )
 
 # CUSTOM STYLING
